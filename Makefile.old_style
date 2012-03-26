@@ -1,0 +1,60 @@
+#CFLAGS+=-g -Wall -O2 -D_LARGEFILE64_SOURCE=1 -D_FILE_OFFSET_BITS=64 -I/usr/include/mysql
+STATIC=
+MYSQL_CONFIG=mysql_config
+PCRE_CONFIG=pcre-config
+CC=gcc
+MYSQL_LDFLAGS=$(shell $(MYSQL_CONFIG) --libs_r)
+MYSQL_CFLAGS=$(shell $(MYSQL_CONFIG) --cflags)
+PCRE_LDFLAGS=$(shell $(PCRE_CONFIG) --libs)
+PCRE_CFLAGS=$(shell $(PCRE_CONFIG) --cflags)
+ZLIB_CFLAGS=
+ZLIB_LDFLAGS=-lz
+
+CFLAGS=-g -Wall -O2 $(MYSQL_CFLAGS)
+LDFLAGS=-L. -lmc_common $(MYSQL_LDFLAGS) $(PCRE_LDFLAGS) $(ZLIB_LDFLAGS)
+DESTDIR=
+PREFIX=/usr/local
+BINDIR=$(PREFIX)/bin
+LIBDIR=$(PREFIX)/lib
+all:libmc_common.so libmc_common.a mysqlcsv
+install-strip: install
+	strip $(DESTDIR)/$(BIN)/mysqlcsv
+install:all
+	install -d $(DESTDIR)/$(BINDIR)
+	install -s -m 755 mysqlcsv $(DESTDIR)/$(BINDIR)/mysqlcsv
+	install -s -m 644 libmc_common.a $(DESTDIR)/$(LIBDIR)/libmc_common.a
+	install -s -m 755 libmc_common.so $(DESTDIR)/$(LIBDIR)/libmc_common.so
+uninstall:
+	rm -f $(DESTDIR)/$(BIN)/mysqlcsv
+common.o: common.c
+	$(CC) $(CFLAGS) -o common.o -c common.c
+libmc_common.so: common.c
+	$(CC) $(CFLAGS) -fPIC -shared common.c -o libmc_common.so
+libmc_common.a: common.o
+	$(AR) r libmc_common.a common.o
+mysqlcsv.o: mysqlcsv.c
+	$(CC) $(CFLAGS) -o mysqlcsv.o -c mysqlcsv.c
+test.o: test.c
+test: common.o test.o
+mysqlcsv: mysqlcsv.o
+ifdef STATIC
+	$(CC) -static mysqlcsv.o $(LDFLAGS) -o mysqlcsv
+else
+	$(CC) mysqlcsv.o $(LDFLAGS) -o mysqlcsv
+endif
+clean:
+	rm -f *.o *.a *.so *.gch
+	rm -f mysqlcsv
+help:
+	@echo "variables:"
+	@echo "PREFIX=<PATH>             prefix dir, default /usr/local"
+	@echo "MYSQL_CONFIG=<path>       set mysql_config path"
+	@echo "PCRE_CONFIG=<path>        set pcre_config path"
+	@echo "ZLIB_CFLAGS=<flags> 	 set zlib CFLAGS"
+	@echo "ZLIB_LDFLAGS=<flags> 	 set zlib LDFLAGS"
+	@echo "STATIC=[string]           statically compiled, default dynamic compiled"
+	@echo
+	@echo
+	@echo "# make MYSQL_CONFIG=/usr/bin/mysql_config PCRE_CONFIG=/usr/bin/pcre-config"
+	@echo "# make install"
+	@echo "# make clean"

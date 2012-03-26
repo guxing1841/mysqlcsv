@@ -1,0 +1,10 @@
+Please install cmake first
+Download from http://cmake.org/cmake/resources/software.html
+
+Lookup cmake variables
+$ cmake -LH
+$ cmake . MYSQL_INCLUDE_DIR=/xxxxx/include/mysql/ -DMYSQL_LIB_DIR=/xxxxx/lib64/mysql/
+$ make
+$ make install
+OR
+$ make install/strip
