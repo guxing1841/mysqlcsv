@@ -3,7 +3,8 @@ Download from http://cmake.org/cmake/resources/software.html
 
 Lookup cmake variables
 $ cmake -LH
-$ cmake . MYSQL_INCLUDE_DIR=/xxxxx/include/mysql/ -DMYSQL_LIB_DIR=/xxxxx/lib64/mysql/
+$ cmake . -DMYSQL_INCLUDE_DIR=/usr/include -DMYSQL_LIB_DIR=/usr/lib64 -DCMAKE_C_FLAGS="-O3"
+$ make help
 $ make
 $ make install
 OR
