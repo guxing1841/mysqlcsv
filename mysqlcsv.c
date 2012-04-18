@@ -16,7 +16,7 @@
 #include "common.h"
 #undef DOINT
 #endif /* DOINT */
-#define MC_VERSION "0.15"
+#define MC_VERSION "0.16"
 static char *progname = NULL;
 static MYSQL mysql_connect, *mysql = NULL;
 static MYSQL_ROW row;
@@ -2395,6 +2395,7 @@ static int getopt_dump(int argc, char **argv, DARRAY *databases, DARRAY *tables)
 	if (ignore_databases == NULL)
 		ignore_databases = dynamic_hash_new();
 	dynamic_hash_store(ignore_databases, "information_schema", NULL);
+	dynamic_hash_store(ignore_databases, "performance_schema", NULL);
 	if (ignore_data_types == NULL)
 		ignore_data_types = dynamic_hash_new();
 	dynamic_hash_store(ignore_data_types, "MRG_MyISAM", NULL);
@@ -2638,6 +2639,7 @@ static int getopt_import(int argc, char **argv, DARRAY *databases, DARRAY *table
 	if (ignore_databases == NULL)
 		ignore_databases = dynamic_hash_new();
 	dynamic_hash_store(ignore_databases, "information_schema", NULL);
+	dynamic_hash_store(ignore_databases, "performance_schema", NULL);
 	if (ignore_data_types == NULL)
 		ignore_data_types = dynamic_hash_new();
 	dynamic_hash_store(ignore_data_types, "MRG_MyISAM", NULL);
