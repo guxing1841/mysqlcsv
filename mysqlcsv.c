@@ -52,10 +52,12 @@ static char *opt_unix_socket = NULL;
 static int opt_gzip = 0;
 static int opt_function = 0;
 static int opt_procedure = 0;
+static int opt_trigger = 0;
 static DHASH *ignore_databases = NULL;
 static DHASH *ignore_tables = NULL;
 static DHASH *ignore_functions = NULL;
 static DHASH *ignore_procedures = NULL;
+static DHASH *ignore_triggers = NULL;
 static DHASH *ignore_data_types = NULL;
 static DHASH *ignore_data_tables = NULL;
 static DHASH *ignore_data_databases = NULL;
@@ -73,16 +75,20 @@ static int opt_view = 0;
 static char *tables_form_pcre = NULL;
 static char *functions_pcre = NULL;
 static char *procedures_pcre = NULL;
+static char *triggers_pcre = NULL;
 static char *functions_form_pcre = NULL;
 static char *procedures_form_pcre = NULL;
+static char *triggers_form_pcre = NULL;
 static pcre *databases_re = NULL;
 static pcre *tables_re = NULL;
 static pcre *tables_form_re = NULL;
 static pcre *tables_form_replace_re = NULL;
 static pcre *functions_re = NULL;
 static pcre *procedures_re = NULL;
+static pcre *triggers_re = NULL;
 static pcre *functions_form_re = NULL;
 static pcre *procedures_form_re = NULL;
+static pcre *triggers_form_re = NULL;
 
 
 typedef struct mc_fh_s {
@@ -306,6 +312,31 @@ static int is_ignore_procedure(const char *procedure, const char *database) {
 	}
 	if (db_procedure != NULL)
 		dynamic_string_destroy(db_procedure);
+	return ret;
+}
+
+static int is_ignore_trigger(const char *trigger, const char *database) {
+	int ret = MC_FALSE;
+	DSTRING *db_trigger = NULL;
+	if (database != NULL) {
+		db_trigger = dynamic_string_new();
+		dynamic_string_append(db_trigger, database);
+		dynamic_string_append(db_trigger, ".");
+		dynamic_string_append(db_trigger, trigger);
+		dynamic_string_append_char(db_trigger, '\0');
+	}
+	if ((triggers_re != NULL \
+		&& ((database != NULL && mc_pcre_exec(triggers_re, db_trigger->buf, strlen(db_trigger->buf))<0) \
+		&& mc_pcre_exec(triggers_re, trigger, strlen(trigger))<0)) \
+		|| (ignore_triggers != NULL \
+		&& ((database != NULL && dynamic_hash_haskey(ignore_triggers, db_trigger->buf) == MC_TRUE) \
+		|| dynamic_hash_haskey(ignore_triggers, trigger) == MC_TRUE))) {
+		if (opt_verbose > 1)
+			log_error("Ignore trigger %s\n", db_trigger == NULL ? trigger : db_trigger->buf);
+		ret = MC_TRUE;
+	}
+	if (db_trigger != NULL)
+		dynamic_string_destroy(db_trigger);
 	return ret;
 }
 
@@ -537,6 +568,41 @@ static DARRAY * get_dump_procedures(DARRAY *procedures)
         return procedures;
 }
 
+static DARRAY * get_dump_triggers(DARRAY *triggers)
+{
+	    MYSQL_RES *results = NULL;
+        unsigned long *lengths;
+        char *trigger;
+        dynamic_string_reset(sql);
+        dynamic_string_append(sql, "SHOW TRIGGERS");
+		/*
+        if (tables_where != NULL) {
+                dynamic_string_append(sql, " WHERE ");
+                dynamic_string_append(sql, tables_where);
+        }
+		*/
+        dynamic_string_append_char(sql, '\0');
+
+        if (opt_verbose>1)
+                log_error("Query: %s\n", sql->buf);
+        if (mysql_query(mysql, sql->buf) != 0) {
+                log_error("Error: can't query: %s\n", mysql_error(mysql));
+                return NULL;
+        }
+        results = mysql_store_result(mysql);
+		if (results == NULL) {
+			log_error("Error: mysql failed to store result: %s\n", mysql_error(mysql));
+			return NULL;
+		}
+        while((row = mysql_fetch_row(results))) {
+                lengths = mysql_fetch_lengths(results);
+                trigger = string_ncopy(row[0], lengths[0]);
+                dynamic_array_push(triggers, (void *)trigger);
+        }
+        mysql_free_result(results);
+        return triggers;
+}
+
 static DARRAY * get_dump_functions(DARRAY *functions)
 {
 	MYSQL_RES *results = NULL;
@@ -609,6 +675,9 @@ static DARRAY * get_import_prefixes(DARRAY *array, const char *directory, int ty
 	} else if (type == 2) {
 		s1 = ".proc";
 		s2 = ".proc.gz";
+	} else if (type == 3) {
+		s1 = ".trigger";
+		s2 = ".trigger.gz";
 	}
 	if ((dir_p = opendir(directory)) == NULL)
 	{
@@ -672,6 +741,11 @@ static DARRAY *get_import_functions(DARRAY *functions, const char *directory)
 static DARRAY *get_import_procedures(DARRAY *procedures, const char *directory)
 {
 	return get_import_prefixes(procedures, directory, 2);
+}
+
+static DARRAY *get_import_triggers(DARRAY *triggers, const char *directory)
+{
+	return get_import_prefixes(triggers, directory, 2);
 }
 
 static int use_database(const char *database)
@@ -790,6 +864,50 @@ static int dump_procedure(const char *procedure)
 	}
 	dynamic_string_append_char(dstring, '\0');
 	return dump_procedure_file(procedure, dstring->buf);
+}
+
+static int dump_trigger_file(const char *trigger, const char *filename)
+{
+	MYSQL_RES *results = NULL;
+	MYSQL_ROW row;
+	unsigned long *lengths;
+	dynamic_string_reset(sql);
+	dynamic_string_append(sql, "SHOW CREATE TRIGGER `");
+	dynamic_string_append(sql, trigger);
+	dynamic_string_append(sql, "`");
+	dynamic_string_append_char(sql, '\0');
+
+	if (opt_verbose>1)
+		log_error("Query: %s\n", sql->buf);
+	if (mysql_query(mysql, sql->buf) != 0) {
+		log_error("Error: can't query: %s\n", mysql_error(mysql));
+		return MC_FALSE;
+	}
+	results = mysql_store_result(mysql);
+	if (results == NULL) {
+		log_error("Error: mysql failed to store result: %s\n", mysql_error(mysql));
+		return MC_FALSE;
+	}
+	row = mysql_fetch_row(results);
+	lengths = mysql_fetch_lengths(results);
+	if (dump_mysql_form(filename, row[2], lengths[2]) == MC_FALSE) {
+		mysql_free_result(results);
+		return MC_FALSE;
+	}
+	mysql_free_result(results);
+	return MC_TRUE;
+}
+
+static int dump_trigger(const char *trigger)
+{
+	dynamic_string_reset(dstring);
+	dynamic_string_append(dstring, trigger);
+	dynamic_string_append(dstring, ".trigger");
+	if (opt_gzip) {
+		dynamic_string_append(dstring, ".gz");
+	}
+	dynamic_string_append_char(dstring, '\0');
+	return dump_trigger_file(trigger, dstring->buf);
 }
 
 static int dump_table_form_file(const char *table, const char *filename)
@@ -983,6 +1101,50 @@ static int import_proc_file(const char *table, const char *filename)
 	return MC_OK;
 }
 
+/*
+	RETURN:
+		MC_OK		0	Success
+		MC_FAILURE	-1  Failure
+		MC_IGNORE	1	Ignore content
+*/
+static int import_trigger_file(const char *table, const char *filename)
+{
+	dynamic_string_reset(sql);
+	dynamic_string_append(sql, "DROP TRIGGERS IF EXISTS `");
+	dynamic_string_append(sql, table);
+	dynamic_string_append(sql, "`");
+	dynamic_string_append_char(sql, '\0');
+	if (opt_verbose>1)
+		log_error("Query: %s\n", sql->buf);
+	if (mysql_query(mysql, sql->buf) != 0) {
+		log_error("Error: can't query: %s\n", mysql_error(mysql));
+		return MC_FAILURE;
+	}
+	dynamic_string_reset(sql);
+	if (opt_gzip) {
+		if (dynamic_string_gzreadfile(sql, filename) == MC_FALSE)
+			return MC_FAILURE;
+	}
+	else
+	{
+		if (dynamic_string_readfile(sql, filename) == MC_FALSE)
+			return MC_FAILURE;
+	}
+	if (triggers_re != NULL && mc_pcre_exec(triggers_re, sql->buf, sql->len)<0) {
+		return MC_IGNORE;
+	}
+	dynamic_string_append_char(sql, '\0');
+	if (opt_verbose>1)
+		log_error("Query: %s\n", sql->buf);
+	if (mysql_query(mysql, sql->buf) != 0) {
+		log_error("Error: can't query: %s\n", mysql_error(mysql));
+		return MC_FAILURE;
+	}
+	return MC_OK;
+}
+
+
+
 
 static int import_table_form(const char *table)
 {	
@@ -1021,6 +1183,18 @@ static int import_procedure(const char *procedure)
 	return import_proc_file(procedure, dstring->buf);
 }
 
+
+static int import_trigger(const char *trigger)
+{
+	dynamic_string_reset(dstring);
+	dynamic_string_append(dstring, trigger);
+	dynamic_string_append(dstring, ".trigger");
+	if (opt_gzip) {
+		dynamic_string_append(dstring, ".gz");
+	}
+	dynamic_string_append_char(dstring, '\0');
+	return import_trigger_file(trigger, dstring->buf);
+}
 
 static int dump_table_file(const char *table, const char *filename)
 {
@@ -1573,7 +1747,7 @@ static int dump_all_procedures()
 		procedure = (char *)dynamic_array_fetch(procedures, i);
 		nd++;
 		if (opt_verbose)
-			log_error("Dump FUCTION: `%s`\n", procedure);
+			log_error("Dump PROCEDURE: `%s`\n", procedure);
 		if (dump_procedure(procedure) == MC_FALSE) {
 			en++;
 			if (!opt_force) break;
@@ -1589,6 +1763,39 @@ static int dump_all_procedures()
 		free(procedure);
 	}
 	dynamic_array_destroy(procedures);	
+	return ret;
+}
+
+static int dump_all_triggers()
+{	
+	int ret = MC_TRUE;
+	ssize_t i;
+	char *trigger;
+	DARRAY *triggers = NULL;
+	ssize_t nd=0, en=0;
+	triggers = dynamic_array_new();
+	if (get_dump_triggers(triggers) == NULL)
+		return MC_FALSE;
+	for (i=0; i<dynamic_array_count(triggers); i++) {
+		trigger = (char *)dynamic_array_fetch(triggers, i);
+		nd++;
+		if (opt_verbose)
+			log_error("Dump TRIGGER: `%s`\n", trigger);
+		if (dump_trigger(trigger) == MC_FALSE) {
+			en++;
+			if (!opt_force) break;
+			continue;
+		}
+	}
+	if (!opt_force && (en))
+		ret = MC_FALSE;
+	if (opt_verbose)
+		log_error("%ld triggers, %ld was failed\n", nd, en);
+	for (i=0; i<dynamic_array_count(triggers); i++) {
+		trigger = (char *)dynamic_array_fetch(triggers, i);
+		free(trigger);
+	}
+	dynamic_array_destroy(triggers);	
 	return ret;
 }
 
@@ -1772,6 +1979,44 @@ static int import_all_procedures(const char *database)
 	return ret;
 }
 
+static int import_all_triggers(const char *database)
+{	
+	ssize_t i;
+	char *trigger;
+	DARRAY *triggers = NULL;
+	ssize_t nd=0, en=0;
+	int ret = MC_TRUE, r;
+	triggers = dynamic_array_new();
+	if (get_import_triggers(triggers, ".") == NULL)
+		return MC_FALSE;
+	for (i=0; i<dynamic_array_count(triggers); i++) {
+		trigger = (char *)dynamic_array_fetch(triggers, i);
+		if (is_ignore_trigger(trigger, database) == MC_TRUE)
+			continue;
+		r = import_trigger(trigger);
+		if (r == MC_IGNORE)
+			continue;
+		nd++;
+		if (opt_verbose)
+			log_error("Import trigger: `%s`\n", trigger);
+		if (r == MC_FAILURE) {
+			en++;
+			if (!opt_force) break;
+			continue;
+		} 
+	}
+	if (en)
+		ret =  MC_FALSE;
+	if (opt_verbose)
+		log_error("%ld triggers, %ld was failed\n", nd, en);
+	for (i=0; i<dynamic_array_count(triggers); i++) {
+		trigger = (char *)dynamic_array_fetch(triggers, i);
+		free(trigger);
+	}
+	dynamic_array_destroy(triggers);
+	return ret;
+}
+
 static int dump_database(const char *database)
 {
 	struct stat s;
@@ -1816,6 +2061,15 @@ static int dump_database(const char *database)
 				goto end;
 		}
 	}
+	if (opt_trigger)
+	{
+		if (dump_all_triggers(database) == MC_FALSE)
+		{
+			ret = MC_FALSE;
+			if (!opt_force)
+				goto end;
+		}
+	}
 	end:
 	if (opt_verbose>1)
 		log_error("Chdir: '..'\n");
@@ -1851,6 +2105,15 @@ static int import_database(const char *database)
 	if (opt_procedure)
 	{
 		if (import_all_procedures(database) == MC_FALSE)
+		{
+			ret = MC_FALSE;
+			if (!opt_force)
+				goto end;
+		}
+	}
+	if (opt_trigger)
+	{
+		if (import_all_triggers(database) == MC_FALSE)
 		{
 			ret = MC_FALSE;
 			if (!opt_force)
@@ -2248,9 +2511,13 @@ static void usage_dump()
 	puts("      --functions-form-pcre");
 	puts("                      Dump only where matched functions of form(pcre); QUOTES mandatory!");
 	puts("      --procedures-pcre");
-	puts("                      Dump only where matched functions(pcre); QUOTES mandatory!");
+	puts("                      Dump only where matched procedures(pcre); QUOTES mandatory!");
 	puts("      --procedures-form-pcre");
-	puts("                      Dump only where matched functions of form(pcre); QUOTES mandatory!");
+	puts("                      Dump only where matched procedures of form(pcre); QUOTES mandatory!");
+	puts("      --triggers-pcre");
+	puts("                      Dump only where matched triggers(pcre); QUOTES mandatory!");
+	puts("      --triggers-form-pcre");
+	puts("                      Dump only where matched triggers of form(pcre); QUOTES mandatory!");
 	puts("  -f, --force         Ignore error");
 	puts("  -g, --gzip          Dump to gzip compress file; Add file suffix '.gz'");
 	puts("  -?, --help          Display this help message and exit.");
@@ -2263,6 +2530,8 @@ static void usage_dump()
 	puts("                      Dump only not matched functions; MULTIPLE!");
 	puts("      --ignore-procedure");
 	puts("                      Dump only not matched procedures; MULTIPLE!");
+	puts("      --ignore-trigger");
+	puts("                      Dump only not matched triggers; MULTIPLE!");
 	puts("  -x, --lock-all-tables");
 	puts("                      Locks all tables across all databases. This is achieved");
 	puts("                      by taking a global read lock for the duration of the");
@@ -2276,6 +2545,7 @@ static void usage_dump()
 	puts("                      not given it's solicited on the tty.");
 	puts("  -P, --port=#        Port number to use for connection.");
 	puts("      --procedure     Dump procedures");
+	puts("      --trigger       Dump triggers");
 	puts("      --quick         Don't buffer query to client for dump.");
 	puts("  -S, --socket=name   Socket file to use for connection.");
 	puts("  -u, --user=name     User for login if not current user.");
@@ -2308,7 +2578,7 @@ static void usage_import()
 	puts("                      Set the default character set.");
 	puts("      --defaults-file");
 	puts("                      Only read default options from the given file");
-    puts("      --disable-keys  Disable keys before import table data, (fast!!!).");
+	puts("      --disable-keys  Disable keys before import table data, (fast!!!).");
 	puts("  -d, --import-directory=path");
 	puts("                      Set import work directory.");
 	puts("      --databases-where");
@@ -2326,9 +2596,13 @@ static void usage_import()
 	puts("      --functions-form-pcre");
 	puts("                      Import only where matched functions of form(pcre); QUOTES mandatory!");
 	puts("      --procedures-pcre");
-	puts("                      Import only where matched functions(pcre); QUOTES mandatory!");
+	puts("                      Import only where matched procedures(pcre); QUOTES mandatory!");
 	puts("      --procedures-form-pcre");
-	puts("                      Import only where matched functions of form(pcre); QUOTES mandatory!");
+	puts("                      Import only where matched procedures of form(pcre); QUOTES mandatory!");
+	puts("      --triggers-pcre");
+	puts("                      Import only where matched triggers(pcre); QUOTES mandatory!");
+	puts("      --triggers-form-pcre");
+	puts("                      Import only where matched triggers of form(pcre); QUOTES mandatory!");
 	puts("      --drop-table    Drop table before import");
 	puts("  -f, --force         Ignore error");
 	puts("  -g, --gzip          Import from gzip compress file; Add file suffix '.gz'");
@@ -2341,6 +2615,8 @@ static void usage_import()
 	puts("                      Import only not matched functions; MULTIPLE!");
 	puts("      --ignore-procedure");
 	puts("                      Import only not matched procedures; MULTIPLE!");
+	puts("      --ignore-trigger");
+	puts("                      Import only not matched triggers; MULTIPLE!");
 	puts("  -l, --lock-tables   Lock table for write of import.");
 	puts("  -N, --no-data       No row information.");
 	puts("  -p, --password[=name]");
@@ -2348,6 +2624,7 @@ static void usage_import()
 	puts("                      not given it's solicited on the tty.");
 	puts("  -P, --port=#        Port number to use for connection.");
 	puts("      --procedure     import procedures");
+	puts("      --trigger       import triggers");
 	puts("      --replace       If duplicate unique key was found, replace old row.");
 	puts("  -S, --socket=name   Socket file to use for connection.");
 	puts("  -u, --user=name     User for login if not current user.");
@@ -2426,6 +2703,7 @@ static int getopt_dump(int argc, char **argv, DARRAY *databases, DARRAY *tables)
 			{"tables-pcre", 1, 0, 0},
 			{"functions-pcre", 1, 0, 0},
 			{"procedures-pcre", 1, 0, 0},
+			{"triggers-pcre", 1, 0, 0},
 			{"force", 0, 0, 'f'},
 			{"gzip", 0, 0, 'g'},
 			{"host", 1, 0, 'h'},
@@ -2434,11 +2712,13 @@ static int getopt_dump(int argc, char **argv, DARRAY *databases, DARRAY *tables)
 			{"ignore-table", 1, 0, 0},
 			{"ignore-function", 1, 0, 0},
 			{"ignore-procedure", 1, 0, 0},
+			{"ignore-trigger", 1, 0, 0},
 			{"lock-all-tables", 0, 0, 'x'},
 			{"lock-tables", 0, 0, 'l'},
 			{"no-data", 0, 0, 'N'},
 			{"master-data", 0, 0, 0},
 			{"procedure", 0, 0, 0},
+			{"trigger", 0, 0, 0},
 			{"port", 1, 0, 'P'},
 			{"password", 2, 0, 'p'},
 			{"quick", 0, 0, 0},
@@ -2514,6 +2794,10 @@ static int getopt_dump(int argc, char **argv, DARRAY *databases, DARRAY *tables)
 					opt_procedure = 1;
 				}
 				else
+				if (LONG_OPTIONS_EQ("trigger")) {
+					opt_trigger = 1;
+				}
+				else
 				if (LONG_OPTIONS_EQ("functions-pcre"))
 				{
 					functions_pcre = optarg;
@@ -2522,6 +2806,11 @@ static int getopt_dump(int argc, char **argv, DARRAY *databases, DARRAY *tables)
 				if (LONG_OPTIONS_EQ("procedures-pcre"))
 				{
 					procedures_pcre = optarg;
+				}
+				else
+				if (LONG_OPTIONS_EQ("triggers-pcre"))
+				{
+					triggers_pcre = optarg;
 				}
 				else {
 					log_error("Error: Unkown long option '--%s'\n", long_options[option_index].name); 
@@ -2677,10 +2966,12 @@ static int getopt_import(int argc, char **argv, DARRAY *databases, DARRAY *table
 			{"ignore-table", 1, 0, 0},
 			{"ignore-function", 1, 0, 0},
 			{"ignore-procedure", 1, 0, 0},			
+			{"ignore-trigger", 1, 0, 0},			
 			{"lock-tables", 0, 0, 'l'},
 			{"no-data", 0, 0, 'N'},
 			{"port", 1, 0, 'P'},
 			{"procedure", 0, 0, 0},
+			{"trigger", 0, 0, 0},
 			{"password", 2, 0, 'p'},
 			{"replace", 0, 0, 0},
 			{"socket", 1, 0, 'S'},
@@ -2731,6 +3022,12 @@ static int getopt_import(int argc, char **argv, DARRAY *databases, DARRAY *table
 					dynamic_hash_store(ignore_procedures, optarg, NULL);
 				}
 				else
+				if (LONG_OPTIONS_EQ("ignore-trigger")) {
+					if (ignore_triggers == NULL)
+						ignore_triggers = dynamic_hash_new();
+					dynamic_hash_store(ignore_triggers, optarg, NULL);
+				}
+				else
 				if (LONG_OPTIONS_EQ("master-data")) {
 					opt_master_data = 1;
 				}
@@ -2738,7 +3035,7 @@ static int getopt_import(int argc, char **argv, DARRAY *databases, DARRAY *table
 				if (LONG_OPTIONS_EQ("databases-pcre")) {
 					databases_pcre = optarg;
 				}
-                else
+                		else
 				if (LONG_OPTIONS_EQ("disable-keys")) {
 					opt_disable_keys = 1;
 				}
@@ -2775,6 +3072,10 @@ static int getopt_import(int argc, char **argv, DARRAY *databases, DARRAY *table
 					opt_procedure = 1;
 				}
 				else
+				if (LONG_OPTIONS_EQ("trigger")) {
+					opt_trigger = 1;
+				}
+				else
 				if (LONG_OPTIONS_EQ("functions-pcre"))
 				{
 					functions_pcre = optarg;
@@ -2785,6 +3086,11 @@ static int getopt_import(int argc, char **argv, DARRAY *databases, DARRAY *table
 					procedures_pcre = optarg;
 				}
 				else
+				if (LONG_OPTIONS_EQ("triggers-pcre"))
+				{
+					triggers_pcre = optarg;
+				}
+				else
 				if (LONG_OPTIONS_EQ("functions-form-pcre"))
 				{
 					functions_pcre = optarg;
@@ -2793,6 +3099,11 @@ static int getopt_import(int argc, char **argv, DARRAY *databases, DARRAY *table
 				if (LONG_OPTIONS_EQ("procedures-form-pcre"))
 				{
 					procedures_pcre = optarg;
+				}
+				else
+				if (LONG_OPTIONS_EQ("triggers-form-pcre"))
+				{
+					triggers_pcre = optarg;
 				}
 				else
 				if (LONG_OPTIONS_EQ("view"))
@@ -3065,6 +3376,27 @@ int main(int argc, char **argv)
 			}
 		}
 	}
+
+	if (opt_trigger)
+	{
+		if (triggers_pcre != NULL) {
+			triggers_re = mc_pcre_complie(triggers_pcre);
+			if (triggers_re == NULL)
+			{
+				result = 1;
+				goto end;
+			}
+		}
+		if (triggers_form_pcre != NULL)
+		{
+			triggers_form_re = mc_pcre_complie(triggers_form_pcre);
+			if (triggers_form_re == NULL)
+			{
+				result = 1;
+				goto end;
+			}
+		}
+	}
 	if (opt_getpass && opt_password == NULL) {
 		opt_password = getpass("Password: ");
 	}
@@ -3096,6 +3428,8 @@ int main(int argc, char **argv)
 		dynamic_hash_destroy(ignore_functions);
 	if (ignore_procedures != NULL)
 		dynamic_hash_destroy(ignore_procedures);
+	if (ignore_triggers != NULL)
+		dynamic_hash_destroy(ignore_triggers);
 	if (ignore_data_types != NULL)
 		dynamic_hash_destroy(ignore_data_types);
 	if (ignore_data_tables != NULL)
