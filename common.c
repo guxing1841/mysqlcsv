@@ -2,6 +2,19 @@
  * Copyright (C) Changrong Zhou
  */
 #include "common.h"
+#include <assert.h>
+/* From perl x2p hash.h */ 
+const char coeff[] = {
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+	61,59,53,47,43,41,37,31,29,23,17,13,11,7,3,1,
+};
+int ovector[OVECCOUNT];
 
 int log_error(const char *format, ...)
 {
@@ -18,10 +31,33 @@ int log_error(const char *format, ...)
 void *safe_malloc(size_t size)
 {
 	void *ptr;
-	while (1) {
+	while (1)
+	{
 		ptr = malloc(size);
-		if (ptr == NULL) {
+		if (ptr == NULL)
+		{
 			log_error("Error: can't malloc: %s\n", strerror(errno));
+#ifdef FORCK_EXIT
+			exit(1);
+		}
+#else
+			sleep(300);
+			continue;
+		}
+		break;
+#endif /* FORCK_EXIT */
+	}
+	return ptr;
+}
+
+void *safe_memalign(size_t alignment, size_t size)
+{
+	void *ptr;
+	while (1)
+	{
+		if (posix_memalign(&ptr, alignment, size) != 0)
+		{
+			log_error("Error: can't memaligin: %s\n", strerror(errno));
 #ifdef FORCK_EXIT
 			exit(1);
 		}
@@ -38,9 +74,11 @@ void *safe_malloc(size_t size)
 void *safe_realloc(void *ptr, size_t size)
 {
 	void *p;
-	while (1) {
+	while (1)
+	{
 		p = realloc(ptr, size);
-		if (p == NULL) {
+		if (p == NULL)
+		{
 			log_error("Error: can't realloc: %s\n", strerror(errno));
 #ifdef FORCK_EXIT
 			exit(1);
@@ -60,7 +98,8 @@ void *safe_realloc(void *ptr, size_t size)
 char *string_ncopy(const char *src, size_t n)
 {
 	char *dst;
-	if (src == NULL || n == 0) {
+	if (src == NULL || n == 0)
+	{
 		return NULL;
 	}
 	dst = safe_malloc(n+1);
@@ -69,16 +108,18 @@ char *string_ncopy(const char *src, size_t n)
 	return dst;
 }
 
-char *string_copy(const char *src) {
+char *string_copy(const char *src)
+{
 	return string_ncopy(src, strlen(src));
 }
 
-int dynamic_hash(const char *key)
+int dynamic_hash(const char *key, size_t key_len)
 {
-	register size_t i;
-	register const char *s;
-	register size_t hash;
-	for (s=key, i=0, hash=0; i<COEFF_COUNT && *s; i++, s++, hash*=5) {
+	size_t i;
+	const char *s;
+	size_t hash;
+	for (s=key, i=0, hash=0; i<COEFF_COUNT && i<key_len; i++, s++, hash*=5)
+	{
 		hash += *s * coeff[i];
 	} 
 	return hash;
@@ -99,11 +140,13 @@ void dynamic_hash_destroy(DHASH *dht)
 	DHENT *entry;
 	DHENT *a;
 	size_t i;
-	for (i=0; i<dht->size; i++) {
+	for (i=0; i<dht->size; i++)
+	{
 		entry = dht->array[i];
 		if (entry == NULL)
 			continue;
-		for (; entry != NULL; entry = a) {
+		for (; entry != NULL; entry = a)
+		{
 			a = entry->next;
 			if (entry->key != NULL)
 				free(entry->key);
@@ -117,20 +160,23 @@ void dynamic_hash_destroy(DHASH *dht)
 void dynamic_hash_split(DHASH *dht)
 {
 	size_t newsize = dht->size * 2;
-	size_t i;
 	size_t newindex;
+	size_t i;
 	DHENT **oentry;
 	DHENT *entry;
 	oentry = (DHENT **)safe_realloc(dht->array, sizeof(DHENT *) * newsize);
 	memset(oentry+dht->size, 0, sizeof(DHENT *)*(newsize-dht->size));
 	dht->array = oentry;
-	for (i=0; i<dht->size; i++) {
+	for (i=0; i<dht->size; i++)
+	{
 		oentry = &(dht->array[i]);
 		if (*oentry == NULL)
 			continue;
-		for (entry = *oentry; entry != NULL; entry = *oentry) {
+		for (entry = *oentry; entry != NULL; entry = *oentry)
+		{
 			newindex = (entry->hash & (newsize-1));
-			if (newindex != i) {
+			if (newindex != i)
+			{
 				/* New address is NULL */
 				if (dht->array[newindex] == NULL)
 					dht->fill++;
@@ -138,7 +184,9 @@ void dynamic_hash_split(DHASH *dht)
 				*oentry = entry->next;
 				entry->next = dht->array[newindex];
 				dht->array[newindex] = entry;
-			} else {
+			}
+			else
+			{
 				oentry = &entry->next;
 			}
 		}
@@ -150,28 +198,34 @@ void dynamic_hash_split(DHASH *dht)
 }
 
 
-void *dynamic_hash_fetch(DHASH *dht, const char *key)
+void *dynamic_hash_fetch(DHASH *dht, const char *key, size_t key_len)
 {
 	DHENT *entry;
-	int hash = dynamic_hash(key);
-	for (entry=dht->array[hash & (dht->size-1)]; entry != NULL; entry=entry->next) {
+	int hash = dynamic_hash(key, key_len);
+	for (entry=dht->array[hash & (dht->size-1)]; entry != NULL; entry=entry->next)
+	{
 		if (entry->hash != hash)
 			continue;
-		if (strcmp(entry->key, key) != 0)
+		if (entry->key_len != key_len)
+			continue;
+		if (strncmp(entry->key, key, key_len) != 0)
 			continue;
 		return entry->value;
 	}
 	return NULL;
 }
 
-int dynamic_hash_haskey(DHASH *dht, const char *key)
+int dynamic_hash_haskey(DHASH *dht, const char *key, size_t key_len)
 {
 	DHENT *entry;
-	int hash = dynamic_hash(key);
-	for (entry=dht->array[hash & (dht->size-1)]; entry != NULL; entry=entry->next) {
+	int hash = dynamic_hash(key, key_len);
+	for (entry=dht->array[hash & (dht->size-1)]; entry != NULL; entry=entry->next)
+	{
 		if (entry->hash != hash)
 			continue;
-		if (strcmp(entry->key, key) != 0)
+		if (entry->key_len != key_len)
+			continue;
+		if (strncmp(entry->key, key, key_len) != 0)
 			continue;
 		return MC_TRUE;
 	}
@@ -179,16 +233,18 @@ int dynamic_hash_haskey(DHASH *dht, const char *key)
 }
 
 
-void dynamic_hash_store(DHASH *dht, const char *key, void *value)
+void dynamic_hash_store(DHASH *dht, const char *key, size_t key_len, void *value)
 {
 	DHENT *entry;
-	int hash = dynamic_hash(key);
-	DHENT **oentry;
-	oentry = &(dht->array[hash & (dht->size-1)]);
-	for (entry=*oentry; entry != NULL; entry=entry->next) {
+	int hash = dynamic_hash(key, key_len);
+	DHENT **oentry = &(dht->array[hash & (dht->size-1)]);
+	for (entry=*oentry; entry != NULL; entry=entry->next)
+	{
 		if (entry->hash != hash)
 			continue;
-		if (strcmp(entry->key, key) != 0)
+		if (entry->key_len != key_len)
+			continue;
+		if (strncmp(entry->key, key, key_len) != 0)
 			continue;
 		/* Modify the value, No increase in entry*/
 		entry->value = value;
@@ -198,6 +254,7 @@ void dynamic_hash_store(DHASH *dht, const char *key, void *value)
 	entry = (DHENT *)safe_malloc(sizeof(DHENT));
 	memset(entry, 0, sizeof(DHENT));
 	entry->key = string_copy(key);
+	entry->key_len = key_len;
 	entry->value = value;
 	entry->hash = hash;
 	entry->next = *oentry;
@@ -205,23 +262,29 @@ void dynamic_hash_store(DHASH *dht, const char *key, void *value)
 		dht->fill++;
 	dht->ents++;
 	*oentry = entry;
-	if (dht->fill * 100 /(dht->size) > FILLPCT) {
+	//if (dht->fill * 100 /(dht->size) > FILLPCT)
+	//{
+	if (dht->ents > dht->size)
+	{
 		//printf("slipt %lu %lu\n", dht->fill, dht->size);
 		dynamic_hash_split(dht);
 	}
 } 
 
-void dynamic_hash_delete(DHASH *dht, const char *key)
+void dynamic_hash_delete(DHASH *dht, const char *key, size_t key_len)
 {
 	DHENT *entry;
-	int hash = dynamic_hash(key);
+	int hash = dynamic_hash(key, key_len);
 	DHENT **oentry;
 	size_t index = hash & (dht->size-1);
-	for (oentry=&(dht->array[index]); *oentry!=NULL; oentry=&((*oentry)->next)) {
+	for (oentry=&(dht->array[index]); *oentry!=NULL; oentry=&((*oentry)->next))
+	{
 		entry = *oentry;
 		if (entry->hash != hash)
 			continue;
-		if (strcmp(entry->key, key) != 0)
+		if (entry->key_len != key_len)
+			continue;
+		if (strncmp(entry->key, key, key_len) != 0)
 			continue;
 		*oentry = entry->next;
 		dht->ents--;
@@ -236,73 +299,89 @@ void dynamic_hash_delete(DHASH *dht, const char *key)
 
 
 
-DSTRING *dynamic_string_new(void)
+DSTRING *dynamic_string_new(size_t size)
 {
 	DSTRING *dst = safe_malloc(sizeof(DSTRING));
-	memset(dst, 0, sizeof(DSTRING));
-	dst->buf = safe_malloc(sizeof(char *) * ADD_SIZE);
-	dst->size = ADD_SIZE;
-	memset(dst->buf, 0, sizeof(char *) * dst->size);
+	if (size == 0)
+		dst->data = NULL;
+	else
+		dst->data = (char *)safe_malloc(sizeof(char) * size);
+	dst->size = size;
+	dst->len = 0;
+	//printf("new dst %p data %p size %lu len %lu\n", dst, dst->data, dst->size, dst->len);
 	return dst;
 }
 
 void dynamic_string_reset(DSTRING *dst)
 {
-	dst->size = 0;
 	dst->len = 0;
+	//printf("reset dst %p data %p size %lu len %lu\n", dst, dst->data, dst->size, dst->len);
 }
 
 void dynamic_string_destroy(DSTRING *dst)
 {
-	if (dst->buf != NULL)
-		free(dst->buf);
+	//printf("free dst %p data %p size %lu len %lu\n", dst, dst->data, dst->size, dst->len);
+	if (dst->data != NULL)
+		free(dst->data);
 	free(dst);
 }
 
 void dynamic_string_resize(DSTRING *dst, size_t size)
 {
-	if (dst->len > size) {
-		log_error("Error: can't resize dynamic string, size is too small");
-		exit(1);
-	}
-	dst->buf = safe_realloc(dst->buf, size);
+	assert(dst->len <= size);
+	dst->data = (char *)safe_realloc(dst->data, size);
 	dst->size = size;
+	//printf("resize dst %p data %p size %lu len %lu\n", dst, dst->data, dst->size, dst->len);
 }
 
-void dynamic_string_append_char(DSTRING *dst, int c) {
+void dynamic_string_append_char(DSTRING *dst, int c)
+{
 	/* less one char */
-	if (dst->len >= dst->size) {
-		dynamic_string_resize(dst, dst->size+ADD_SIZE);
+	if (dst->len == dst->size)
+	{
+		dynamic_string_resize(dst, dst->size + 1);
 	} 
-	*(dst->buf+dst->len++) = c;
+	*(dst->data+dst->len++) = c;
 }
-
-void dynamic_string_append_csv_field(DSTRING *dst, const char *str, size_t len, char sep_char)
+void dynamic_string_append_csv_field(DSTRING *dst, const char *str, size_t len)
 {
 	const char *p, *e;
 	char *n;
 	size_t t;
-	for (p = str, e = str+len, n = dst->buf+dst->len; p < e; p++, n++) {
+	for (p = str, e = str+len, n = dst->data+dst->len; p < e; p++, n++)
+	{
 		/* less two char */
-		if (n - dst->buf + 1 >= dst->size) {
-			t = n - dst->buf;
-			dynamic_string_resize(dst, dst->size+ADD_SIZE);
-			n = dst->buf + t;
+		if (n - dst->data + 1 >= dst->size)
+		{
+			t = n - dst->data;
+			dynamic_string_resize(dst, dst->size + (e-p)*2);
+			n = dst->data + t;
 		} 
-		if (*p == sep_char || *p == '\\' || *p == '\n') {
+		if (*p == '\\' || *p == '\t' || *p == '\n')
+		{
 			*n++ = '\\';
+		}
+		else if (*p == '\0')
+		{
+			*n++ = '\\';
+			*n = '0';
+			continue;
 		}
 		*n = *p;
 	}
-	dst->len = n-dst->buf;
+	dst->len = n-dst->data;
 }
 
 void dynamic_string_n_append(DSTRING *dst, const char *str, size_t n)
 {
-	if (dst->len + n > dst->size) {
+	if (n == 0)
+		return;
+	if (dst->len + n > dst->size)
+	{
 		dynamic_string_resize(dst, dst->len+n);
 	}
-	memcpy(dst->buf+dst->len, str, n);
+	//printf("%p %d %d\n", dst->data, dst->size, n);
+	memcpy(dst->data+dst->len, str, n);
 	dst->len += n;
 }
 
@@ -316,7 +395,8 @@ int dynamic_string_append_nlist(DSTRING *dst, int n, ...)
 	va_list ap;
 	int i;
 	va_start(ap, n);
-	for (i=0; i<n; i++) {
+	for (i=0; i<n; i++)
+	{
 		dynamic_string_append(dst, va_arg(ap, char *));
 	}
 	va_end(ap);
@@ -327,8 +407,8 @@ void dynamic_string_n_insert(DSTRING *dst, size_t index, const char *src, size_t
 {
 	if (dst->len+n>dst->size)
 		dynamic_string_resize(dst, dst->len+n);
-	memmove(dst->buf+index+n, dst->buf+index, dst->len-index);
-	memcpy(dst->buf+index, src, n);
+	memmove(dst->data+index+n, dst->data+index, dst->len-index);
+	memcpy(dst->data+index, src, n);
 	dst->len+=n;
 }
 
@@ -347,14 +427,17 @@ DSTRING * dynamic_string_readfile(DSTRING *dst, const char *filename)
 		log_error("Error: can't open '%s': %s!\n", filename, strerror(errno));
 		return NULL;
 	}
-	while (1) {
-		if (dst->len + BUF_SIZE > dst->size) {
+	while (1)
+	{
+		if (dst->len + BUF_SIZE > dst->size)
+		{
 			dynamic_string_resize(dst, dst->len+BUF_SIZE);
 		}
-		bytes = read(fd, dst->buf+dst->len, BUF_SIZE);
+		bytes = read(fd, dst->data+dst->len, BUF_SIZE);
 		if (bytes == 0)
 			break;
-		if (bytes == -1) {
+		if (bytes == -1)
+		{
 			log_error("Error: can't read '%s': %s!", filename, strerror(errno));
 			return NULL;
 		}
@@ -374,14 +457,17 @@ DSTRING * dynamic_string_gzreadfile(DSTRING *dst, const char *filename)
 		log_error("Error: can't open '%s': %s!\n", filename, strerror(errno));
 		return NULL;
 	}
-	while (1) {
-		if (dst->len + BUF_SIZE > dst->size) {
+	while (1)
+	{
+		if (dst->len + BUF_SIZE > dst->size)
+		{
 			dynamic_string_resize(dst, dst->len+BUF_SIZE);
 		}
-		bytes = gzread(gzfile, dst->buf+dst->len, BUF_SIZE);
+		bytes = gzread(gzfile, dst->data+dst->len, BUF_SIZE);
 		if (bytes == 0)
 			break;
-		if (bytes == -1) {
+		if (bytes == -1)
+		{
 			log_error("Error: can't read '%s': %s!", filename, gzerror(gzfile, &gzerrno));
 			gzclose(gzfile);
 			return NULL;
@@ -395,15 +481,16 @@ DSTRING * dynamic_string_gzreadfile(DSTRING *dst, const char *filename)
 DARRAY * dynamic_array_new(void)
 {
 	DARRAY *dat = safe_malloc(sizeof(DARRAY));
-	memset(dat, 0, sizeof(DARRAY));
 	dat->ents = 0;
-	dat->buf = NULL;
-	dat->array = NULL;
 	dat->buf = (void **)safe_malloc(sizeof(void *) * 8);
-	memset(dat->buf, 0, sizeof(void *) * 8);
 	dat->size = 8;
 	dat->array = dat->buf;
 	return dat;
+}
+
+void dynamic_array_reset(DARRAY *dat)
+{
+	dat->ents = 0;
 }
 
 
@@ -413,15 +500,18 @@ void dynamic_array_push(DARRAY *dat, void * value)
 	void **p;
 	if (dat->size == (dat->array - dat->buf) + dat->ents)
 	{
-		size = dat->array-dat->buf;
-		if (size > 0) {
+		size = dat->array - dat->buf;
+		if (size > 0)
+		{
 			dat->array = (void **)memmove(dat->buf, dat->array, sizeof(void *) * dat->ents);
-			memset(dat->buf+dat->ents, 0, size);
-		} else {
+			//memset(dat->buf+dat->ents, 0, size);
+		}
+		else
+		{
 			size = dat->size * 2;
 			p = (void **)safe_realloc(dat->buf, sizeof(void *) * size);
 			dat->array = dat->buf = p;
-			memset(dat->buf+dat->size, 0, sizeof(void *) * (size-dat->size));
+			//memset(dat->buf+dat->size, 0, sizeof(void *) * (size-dat->size));
 			dat->size = size;
 		}
 	}
@@ -431,12 +521,14 @@ void dynamic_array_push(DARRAY *dat, void * value)
 
 void * dynamic_array_fetch(DARRAY *dat, ssize_t index)
 {
-	if (index >= 0) {
+	if (index >= 0)
+	{
 		if (index >= dat->ents)
 			return NULL;
 		return *(dat->array+index);
 	}
-	else {
+	else
+	{
 		if (-index >= dat->ents)
 			return NULL;
 		return dat->array[dat->ents+index];
@@ -450,7 +542,8 @@ void dynamic_array_delete(DARRAY *dat, ssize_t index)
 			return;
 		dat->array[index] = NULL;
 	}
-	else {
+	else
+	{
 		if (-index >= dat->ents)
 			return;
 		dat->array[dat->ents+index] = NULL;
@@ -461,8 +554,10 @@ void dynamic_array_set(DARRAY *dat, ssize_t index, void *value)
 {
 	size_t size;
 	void **p;
-	if (index < 0) {
-		if (dat->ents+index < 0) {
+	if (index < 0)
+	{
+		if (dat->ents+index < 0)
+		{
 			log_error("Modification of non-creatable array value attempted, %zd", index);
 			exit(1);
 		}
@@ -471,15 +566,17 @@ void dynamic_array_set(DARRAY *dat, ssize_t index, void *value)
 	if (dat->size < (dat->array - dat->buf) + index + 1)
 	{
 		size = dat->array-dat->buf;
-		if (size > 0) {
+		if (size > 0)
+		{
 			dat->array = (void **)memmove(dat->buf, dat->array, sizeof(void *) * dat->ents);
-			memset(dat->buf+dat->ents, 0, sizeof(void *) * size);
+			//memset(dat->buf+dat->ents, 0, sizeof(void *) * size);
 		}
 		size = index+1;
-		if (dat->size < size) {
+		if (dat->size < size)
+		{
 			p = (void **)safe_realloc(dat->buf, sizeof(void *) * size);
 			dat->array = dat->buf = p;
-			memset(dat->buf+dat->size, 0, sizeof(void *) * (size-dat->size));
+			//memset(dat->buf+dat->size, 0, sizeof(void *) * (size-dat->size));
 			dat->size = size;
 		}
 	}
@@ -512,11 +609,6 @@ void *dynamic_array_shift(DARRAY *dat)
 }
 
 
-size_t dynamic_array_count(DARRAY *dat)
-{
-	return dat->ents;
-}
-
 void dynamic_array_destroy(DARRAY *dat)
 {
 	if (dat->buf != NULL)
@@ -525,13 +617,15 @@ void dynamic_array_destroy(DARRAY *dat)
 }
 
 
-int f_write(FILE *file, const void *buf, size_t count)
+int f_write(FILE *file, const char *buf, size_t count)
 {
 	ssize_t bytes = 0;
-	const void *p = buf;
-	while (p-buf<count) {
+	const char *p = buf;
+	while (p-buf<count)
+	{
 		bytes = fwrite(p, count-(p-buf)>BUF_SIZE ? BUF_SIZE : count-(p-buf), 1, file);
-		if (bytes == -1) {
+		if (bytes == -1)
+		{
 			log_error("Error: can't write: %s\n", strerror(errno));
 			return MC_FALSE;
 		}
@@ -540,13 +634,15 @@ int f_write(FILE *file, const void *buf, size_t count)
 	return MC_TRUE;
 }
 
-int fd_write(int fd, const void *buf, size_t count)
+int fd_write(int fd, const char *buf, size_t count)
 {
 	ssize_t bytes = 0;
-	const void *p = buf;
-	while (p-buf<count) {
+	const char *p = buf;
+	while (p-buf<count)
+	{
 		bytes = write(fd, p, count-(p-buf)>BUF_SIZE ? BUF_SIZE : count-(p-buf));
-		if (bytes == -1) {
+		if (bytes == -1)
+		{
 			log_error("Error: can't write: %s\n", strerror(errno));
 			return MC_FALSE;
 		}
@@ -555,13 +651,15 @@ int fd_write(int fd, const void *buf, size_t count)
 	return MC_TRUE;
 }
 
-int gz_write(gzFile *gzfile, const void *buf, size_t count)
+int gz_write(gzFile *gzfile, const char *buf, size_t count)
 {
 	ssize_t bytes = 0;
-	const void *p = buf;
-	while (p-buf<count) {
+	const char *p = buf;
+	while (p-buf<count)
+	{
 		bytes = gzwrite(gzfile, p, count-(p-buf)>BUF_SIZE ? BUF_SIZE : count-(p-buf));
-		if (bytes == 0) {
+		if (bytes == 0)
+		{
 			log_error("Error: can't write: %s\n", strerror(errno));
 			return MC_FALSE;
 		}
@@ -616,4 +714,153 @@ int mc_pcre_exec(pcre *code, const char *src, size_t length)
 	return rc;
 }
 
+DFILE *my_file_init(int fd)
+{
+	DFILE *df = safe_malloc(sizeof(DFILE));
+	df->fd = fd;
+	df->buf = safe_malloc(BUF_SIZE);
+	df->p = NULL;
+	df->bufsize = BUF_SIZE;
+	df->nb = 0;
+	df->eof = 0;	
+	return df;
+}
 
+void my_file_destroy(DFILE *df)
+{
+	free(df->buf);
+	free(df);
+}
+
+DSTRING *my_file_readline(DSTRING *dst, DFILE *df)
+{
+	int fd = df->fd;
+	int len;
+	char *b;
+	int bufsize = df->bufsize;
+	char *p;
+	ssize_t bytes;
+	if (df->nb > 0)
+	{
+		b = df->p;
+		p = memchr(b, '\n', df->nb);
+		if (p != NULL)
+		{
+			df->p = p+1;
+			len = df->p-b;
+			df->nb = df->nb-len;
+			dynamic_string_n_append(dst, b, len);
+			return dst;
+		}
+		dynamic_string_n_append(dst, b, df->nb);
+		df->nb = 0;
+		df->p = NULL;
+		if (df->eof)
+			return dst;
+	}
+	b = df->buf;
+	for (;;)
+	{
+		//printf("bufsize %d\n", bufsize);
+		bytes = read(fd, b, bufsize);
+		if (bytes == -1)
+		{
+			log_error("Error: read file %d: %s\n", errno, strerror(errno)); 
+			return NULL;
+		}
+		if (bytes == 0)
+		{
+				df->eof = 1;
+				break;
+		}
+		df->eof = 0;
+		p = memchr(b, '\n', bytes);
+		if (p != NULL)
+		{
+			df->p = p+1;
+			len = df->p-b;
+			df->nb = bytes-len;
+			dynamic_string_n_append(dst, b, len);
+			break;
+		}
+		dynamic_string_n_append(dst, b, bytes);
+	}
+	return dst;
+}
+
+DSPLIT *my_split_new(int n)
+{
+	DSPLIT *ds = (DSPLIT *)safe_malloc(sizeof(DSPLIT));
+	ds->ents = 0;
+	ds->size = n;
+	ds->entries = (DSENT *)safe_malloc(sizeof(DSENT)*n);
+	return ds;
+}
+
+void my_split_destroy(DSPLIT *ds)
+{
+	free(ds->entries);
+	free(ds);
+}
+
+DSPLIT *my_split(DSPLIT *ds, const char* s, size_t len, int limit)
+{
+	char *sp;
+	char *p;
+	char *ep = (char *)s + len;
+	DSENT *dp = ds->entries;
+	ds->ents = 0;
+	int inword = 0;
+	for (sp = p = (char *)s; p<ep; p++)
+	{
+			if (*p == ' ' || *p == '\t')
+			{
+				if (inword)
+				{
+					if (ds->ents > ds->size)
+					{
+							ds->entries = safe_realloc(ds->entries, ds->size * 2);
+							dp = ds->entries + ds->ents -1;
+					}
+					dp->sp = sp;
+					dp->len = p-sp;
+					dp++;
+					inword = 0;
+				}
+			}
+			else
+			{
+				if (!inword)
+				{
+					sp = p;
+					inword = 1;
+					ds->ents++;
+					if (ds->ents == limit)
+					{
+						break;
+					}
+				}
+			}
+	} 
+	if (inword)
+	{
+		if (ds->ents > ds->size)
+		{
+				ds->entries = safe_realloc(ds->entries, ds->size * 2);
+				dp = ds->entries + ds->ents - 1;
+		}
+		dp->sp = sp;
+		dp->len = ep-sp; 
+		dp++;
+		inword = 0;
+	}
+	return ds;
+}
+
+double my_time()
+{
+	struct timeval tv;
+	if (gettimeofday(&tv, NULL) == -1)
+		return 0.0;
+	return tv.tv_sec+tv.tv_usec*0.000001;
+}
